@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+os.environ["KMP_AFFINITY"] = "disabled"
 import sys
 import glob
 import time
