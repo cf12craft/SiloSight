@@ -3,6 +3,19 @@ import os
 os.environ["KMP_AFFINITY"] = "disabled"
 import sys
 import glob
+import logging
+
+# Configure logging
+log_path = os.path.join(os.getcwd(), "silosite_debug.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(log_path, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logging.info("SiloSight application starting...")
 import time
 import sqlite3
 import re
@@ -578,26 +591,34 @@ class SiloSightApp(ctk.CTk):
         self.poll_indexing_status()
 
     def scan_worker_thread(self):
+        logging.info("Starting background scan worker thread...")
         self.scan_msg = "Gathering image files..."
         self.scan_total = 0
         self.scan_current = 0
         self.scan_new_indexed = 0
         
         active_dirs = self.get_active_directories()
-        supported_exts = (".jpg", ".jpeg", ".png")
+        logging.info(f"Active tracked directories to scan: {active_dirs}")
+        supported_exts = (".jpg", ".jpeg", ".png", ".webp", ".jfif", ".bmp", ".tiff", ".gif")
         
         # Traverse directories and identify all images
         all_image_paths = []
         for folder in active_dirs:
             if not os.path.isdir(folder):
+                logging.warning(f"Tracked path is not a valid directory: {folder}")
                 continue
+            logging.info(f"Walking directory: {folder}")
             for root, dirs, files in os.walk(folder):
                 for file in files:
                     if file.lower().endswith(supported_exts):
-                        all_image_paths.append(os.path.abspath(os.path.join(root, file)))
+                        full_path = os.path.abspath(os.path.join(root, file))
+                        all_image_paths.append(full_path)
+                        logging.debug(f"Found image candidate: {full_path}")
                         
         self.scan_total = len(all_image_paths)
+        logging.info(f"Total image candidates found: {self.scan_total}")
         if self.scan_total == 0:
+            logging.info("No images matching supported extensions (.jpg, .jpeg, .png) were found.")
             self.scan_msg = "No images found in tracked directories."
             self.scanning_active = False
             return
@@ -605,12 +626,17 @@ class SiloSightApp(ctk.CTk):
         # Load ResNet-50 pipeline (offline AI model)
         try:
             self.scan_msg = "Loading offline classifier (microsoft/resnet-50)..."
+            logging.info("Loading offline Hugging Face resnet-50 pipeline...")
             import torch
             from transformers import pipeline
             device = 0 if torch.cuda.is_available() else -1
+            logging.info(f"Torch device selected: {device} (CUDA available: {torch.cuda.is_available()})")
             self.classifier = pipeline("image-classification", model="microsoft/resnet-50", device=device)
+            logging.info("Classifier pipeline initialized successfully.")
         except Exception as e:
-            self.scan_msg = f"Failed to initialize Hugging Face ResNet-50: {str(e)}"
+            err_msg = f"Failed to initialize Hugging Face ResNet-50: {str(e)}"
+            logging.error(err_msg, exc_info=True)
+            self.scan_msg = err_msg
             self.scanning_active = False
             return
             
@@ -620,33 +646,39 @@ class SiloSightApp(ctk.CTk):
             
             # Check if already indexed
             if self.db.is_image_indexed(filepath):
+                logging.info(f"Image already indexed, skipping: {filepath}")
                 continue
                 
             self.scan_msg = f"Indexing image {self.scan_current}/{self.scan_total}: {os.path.basename(filepath)}"
+            logging.info(f"Processing image {self.scan_current}/{self.scan_total}: {filepath}")
             
             try:
-                # Silently skip if file can't be read or is corrupted
+                # Open image and verify
                 with Image.open(filepath) as img:
                     img.verify()
+                logging.info(f"Pillow verification successful for: {filepath}")
                 
                 # Get modified timestamp
                 timestamp = os.path.getmtime(filepath)
                 
                 # Predict tags
+                logging.info(f"Running classifier on image: {filepath}")
                 predictions = self.classifier(filepath)
                 tags = [pred['label'] for pred in predictions if pred['score'] > 0.1]
                 ai_tags_str = ", ".join(tags)
+                logging.info(f"Generated tags: {ai_tags_str}")
                 
                 # Commit to Database
                 self.db.add_image(filepath, ai_tags=ai_tags_str, timestamp=timestamp)
                 self.scan_new_indexed += 1
+                logging.info(f"Successfully indexed and committed: {filepath}")
                 
             except Exception as e:
-                # Silent handling for corrupted images
-                # print(f"Skipping corrupted/unreadable image: {filepath}. Error: {e}")
-                pass
+                logging.error(f"Error processing image {filepath}: {str(e)}", exc_info=True)
                 
-        self.scan_msg = f"Indexing completed. Indexed {self.scan_new_indexed} new image(s)."
+        completion_msg = f"Indexing completed. Indexed {self.scan_new_indexed} new image(s)."
+        logging.info(completion_msg)
+        self.scan_msg = completion_msg
         self.scanning_active = False
 
     def poll_indexing_status(self):
