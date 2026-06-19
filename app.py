@@ -277,7 +277,7 @@ class SiloSightApp(ctk.CTk):
         
         model_dropdown = ctk.CTkOptionMenu(
             settings_frame, 
-            values=["microsoft/resnet-50", "google/vit-base-patch16-224", "facebook/deit-base-distilled-patch16-224"],
+            values=["microsoft/resnet-50", "google/vit-base-patch16-224", "Salesforce/blip-image-captioning-base"],
             variable=self.ai_model_var,
             command=self.on_model_change,
             height=28,
@@ -668,16 +668,22 @@ class SiloSightApp(ctk.CTk):
             self.scanning_active = False
             return
 
-        # Load classification pipeline (offline AI model)
+        # Determine pipeline type from model ID
         model_id = self.ai_model_var.get()
+        if "blip" in model_id.lower() or "git-" in model_id.lower() or "caption" in model_id.lower():
+            pipeline_type = "image-to-text"
+        else:
+            pipeline_type = "image-classification"
+
+        # Load pipeline (offline AI model)
         try:
-            self.scan_msg = f"Loading offline classifier ({model_id})..."
-            logging.info(f"Loading offline Hugging Face classification pipeline for model: {model_id}...")
+            self.scan_msg = f"Loading offline model ({model_id})..."
+            logging.info(f"Loading offline Hugging Face pipeline of type '{pipeline_type}' for model: {model_id}...")
             import torch
             from transformers import pipeline
             device = 0 if torch.cuda.is_available() else -1
             logging.info(f"Torch device selected: {device} (CUDA available: {torch.cuda.is_available()})")
-            self.classifier = pipeline("image-classification", model=model_id, device=device)
+            self.classifier = pipeline(pipeline_type, model=model_id, device=device)
             logging.info("Classifier pipeline initialized successfully.")
         except Exception as e:
             err_msg = f"Failed to initialize Hugging Face model {model_id}: {str(e)}"
@@ -709,10 +715,30 @@ class SiloSightApp(ctk.CTk):
                 
                 # Predict tags
                 logging.info(f"Running classifier on image: {filepath}")
-                predictions = self.classifier(filepath)
-                threshold = self.ai_threshold_var.get()
-                tags = [pred['label'] for pred in predictions if pred['score'] > threshold]
-                ai_tags_str = ", ".join(tags)
+                if pipeline_type == "image-to-text":
+                    predictions = self.classifier(filepath)
+                    caption = predictions[0]['generated_text']
+                    logging.info(f"Generated caption: '{caption}'")
+                    
+                    # Stopwords to filter out
+                    stopwords = {
+                        "a", "an", "the", "in", "on", "at", "of", "to", "for", "with", "by", 
+                        "is", "are", "was", "were", "and", "or", "but", "about", "showing", 
+                        "holding", "standing", "sitting", "lying", "playing", "using", "front", 
+                        "back", "background", "foreground", "photo", "picture", "image", "close", 
+                        "view", "shot", "look", "looking", "there", "has", "have", "some", "many",
+                        "this", "that", "these", "those", "it", "its", "of", "from"
+                    }
+                    
+                    # Extract words
+                    words = re.findall(r'\b[a-zA-Z]{2,}\b', caption.lower())
+                    tags = [w for w in words if w not in stopwords]
+                    ai_tags_str = ", ".join(sorted(list(set(tags))))
+                else:
+                    predictions = self.classifier(filepath)
+                    threshold = self.ai_threshold_var.get()
+                    tags = [pred['label'] for pred in predictions if pred['score'] > threshold]
+                    ai_tags_str = ", ".join(tags)
                 logging.info(f"Generated tags: {ai_tags_str}")
                 
                 # Commit to Database
