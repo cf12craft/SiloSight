@@ -47,7 +47,11 @@ SiloSight is a complete, single-file Windows/cross-platform desktop application 
    - **Batch Selection** (Ctrl/Shift-click): Switches the editor panel into bulk actions mode, allowing users to append or overwrite custom user tags, and favorite/unfavorite all selected items simultaneously.
 
 ---
+## Images ##
+![Alt Text](images/image2.png)
+![Alt Text](images/image.png)
 
+---
 ## Setup & Running
 
 1. **Clone the Repository**:
