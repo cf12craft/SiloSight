@@ -55,6 +55,7 @@ def main():
         "--onefile",
         "--windowed",
         "--add-data", add_data_arg,
+        "--collect-submodules", "torch._dynamo",
         "app.py"
     ]
     
