@@ -678,21 +678,29 @@ class SiloSightApp(ctk.CTk):
         # Load pipeline (offline AI model)
         try:
             self.scan_msg = f"Loading offline model ({model_id})..."
-            logging.info(f"Loading offline Hugging Face pipeline of type '{pipeline_type}' for model: {model_id}...")
+            logging.info(f"Loading offline Hugging Face pipeline/model for model: {model_id}...")
             import torch
-            from transformers import pipeline
             device = 0 if torch.cuda.is_available() else -1
             logging.info(f"Torch device selected: {device} (CUDA available: {torch.cuda.is_available()})")
-            try:
-                self.classifier = pipeline(pipeline_type, model=model_id, device=device)
-            except KeyError as ke:
-                if pipeline_type == "image-to-text":
-                    logging.info("Fallback: 'image-to-text' task not supported, attempting 'image-text-to-text'...")
-                    pipeline_type = "image-text-to-text"
+            
+            if "blip" in model_id.lower():
+                from transformers import BlipProcessor, BlipForConditionalGeneration
+                device_name = "cuda" if torch.cuda.is_available() else "cpu"
+                logging.info(f"Loading BLIP processor & model directly on device: {device_name}")
+                self.blip_processor = BlipProcessor.from_pretrained(model_id)
+                self.classifier = BlipForConditionalGeneration.from_pretrained(model_id).to(device_name)
+            else:
+                from transformers import pipeline
+                try:
                     self.classifier = pipeline(pipeline_type, model=model_id, device=device)
-                else:
-                    raise ke
-            logging.info("Classifier pipeline initialized successfully.")
+                except KeyError as ke:
+                    if pipeline_type == "image-to-text":
+                        logging.info("Fallback: 'image-to-text' task not supported, attempting 'image-text-to-text'...")
+                        pipeline_type = "image-text-to-text"
+                        self.classifier = pipeline(pipeline_type, model=model_id, device=device)
+                    else:
+                        raise ke
+            logging.info("Classifier/model initialized successfully.")
         except Exception as e:
             err_msg = f"Failed to initialize Hugging Face model {model_id}: {str(e)}"
             logging.error(err_msg, exc_info=True)
@@ -723,7 +731,30 @@ class SiloSightApp(ctk.CTk):
                 
                 # Predict tags
                 logging.info(f"Running classifier on image: {filepath}")
-                if pipeline_type in ("image-to-text", "image-text-to-text"):
+                if "blip" in model_id.lower():
+                    # Direct BLIP inference
+                    with Image.open(filepath).convert("RGB") as raw_img:
+                        device_name = "cuda" if torch.cuda.is_available() else "cpu"
+                        inputs = self.blip_processor(images=raw_img, return_tensors="pt").to(device_name)
+                        outputs = self.classifier.generate(**inputs, max_new_tokens=50)
+                        caption = self.blip_processor.decode(outputs[0], skip_special_tokens=True)
+                    logging.info(f"Generated caption: '{caption}'")
+                    
+                    # Stopwords to filter out
+                    stopwords = {
+                        "a", "an", "the", "in", "on", "at", "of", "to", "for", "with", "by", 
+                        "is", "are", "was", "were", "and", "or", "but", "about", "showing", 
+                        "holding", "standing", "sitting", "lying", "playing", "using", "front", 
+                        "back", "background", "foreground", "photo", "picture", "image", "close", 
+                        "view", "shot", "look", "looking", "there", "has", "have", "some", "many",
+                        "this", "that", "these", "those", "it", "its", "of", "from"
+                    }
+                    
+                    # Extract words
+                    words = re.findall(r'\b[a-zA-Z]{2,}\b', caption.lower())
+                    tags = [w for w in words if w not in stopwords]
+                    ai_tags_str = ", ".join(sorted(list(set(tags))))
+                elif pipeline_type in ("image-to-text", "image-text-to-text"):
                     predictions = self.classifier(filepath)
                     caption = predictions[0]['generated_text']
                     logging.info(f"Generated caption: '{caption}'")
