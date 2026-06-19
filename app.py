@@ -217,6 +217,13 @@ class SiloSightApp(ctk.CTk):
         privacy_val = self.db.get_setting("save_directories_across_sessions", "1")
         self.save_dirs_var = tk.StringVar(value=privacy_val)
         
+        # Initialize AI settings
+        ai_model_val = self.db.get_setting("ai_model_id", "microsoft/resnet-50")
+        self.ai_model_var = tk.StringVar(value=ai_model_val)
+        
+        threshold_val = float(self.db.get_setting("ai_confidence_threshold", "0.1"))
+        self.ai_threshold_var = tk.DoubleVar(value=threshold_val)
+        
         # Setup base layouts
         self.setup_layout()
         
@@ -253,6 +260,7 @@ class SiloSightApp(ctk.CTk):
         # Settings frame
         settings_frame = ctk.CTkFrame(left_panel, fg_color="transparent")
         settings_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        settings_frame.grid_columnconfigure(0, weight=1)
         
         privacy_toggle = ctk.CTkSwitch(
             settings_frame, 
@@ -263,6 +271,32 @@ class SiloSightApp(ctk.CTk):
             command=self.toggle_privacy_mode
         )
         privacy_toggle.grid(row=0, column=0, sticky="w", pady=5)
+        
+        model_lbl = ctk.CTkLabel(settings_frame, text="AI Classifier Model", font=("Segoe UI", 11, "bold"), text_color="#aaaaaa")
+        model_lbl.grid(row=1, column=0, sticky="w", pady=(8, 2))
+        
+        model_dropdown = ctk.CTkOptionMenu(
+            settings_frame, 
+            values=["microsoft/resnet-50", "google/vit-base-patch16-224", "facebook/deit-base-distilled-patch16-224"],
+            variable=self.ai_model_var,
+            command=self.on_model_change,
+            height=28,
+            font=("Segoe UI", 11)
+        )
+        model_dropdown.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        
+        self.ai_threshold_lbl = ctk.CTkLabel(settings_frame, text=f"AI Tag Threshold: {int(self.ai_threshold_var.get() * 100)}%", font=("Segoe UI", 11, "bold"), text_color="#aaaaaa")
+        self.ai_threshold_lbl.grid(row=3, column=0, sticky="w", pady=(8, 2))
+        
+        threshold_slider = ctk.CTkSlider(
+            settings_frame, 
+            from_=0.01, 
+            to=0.99, 
+            variable=self.ai_threshold_var, 
+            command=self.on_threshold_change,
+            height=16
+        )
+        threshold_slider.grid(row=4, column=0, sticky="ew", pady=(0, 5))
         
         # Separator line
         sep1 = ctk.CTkFrame(left_panel, height=2, fg_color="#333333")
@@ -485,6 +519,17 @@ class SiloSightApp(ctk.CTk):
             
         self.refresh_directory_ui()
 
+    def on_threshold_change(self, value):
+        val = round(float(value), 2)
+        self.ai_threshold_lbl.configure(text=f"AI Tag Threshold: {int(val * 100)}%")
+        self.db.save_setting("ai_confidence_threshold", str(val))
+
+    def on_model_change(self, choice):
+        self.db.save_setting("ai_model_id", choice)
+        self.classifier = None
+        logging.info(f"AI classification model changed to: {choice}")
+        self.set_status(f"AI Model changed to: {choice} (will load on next scan)")
+
     def get_active_directories(self):
         if self.save_dirs_var.get() == "1":
             return self.db.get_tracked_directories()
@@ -623,18 +668,19 @@ class SiloSightApp(ctk.CTk):
             self.scanning_active = False
             return
 
-        # Load ResNet-50 pipeline (offline AI model)
+        # Load classification pipeline (offline AI model)
+        model_id = self.ai_model_var.get()
         try:
-            self.scan_msg = "Loading offline classifier (microsoft/resnet-50)..."
-            logging.info("Loading offline Hugging Face resnet-50 pipeline...")
+            self.scan_msg = f"Loading offline classifier ({model_id})..."
+            logging.info(f"Loading offline Hugging Face classification pipeline for model: {model_id}...")
             import torch
             from transformers import pipeline
             device = 0 if torch.cuda.is_available() else -1
             logging.info(f"Torch device selected: {device} (CUDA available: {torch.cuda.is_available()})")
-            self.classifier = pipeline("image-classification", model="microsoft/resnet-50", device=device)
+            self.classifier = pipeline("image-classification", model=model_id, device=device)
             logging.info("Classifier pipeline initialized successfully.")
         except Exception as e:
-            err_msg = f"Failed to initialize Hugging Face ResNet-50: {str(e)}"
+            err_msg = f"Failed to initialize Hugging Face model {model_id}: {str(e)}"
             logging.error(err_msg, exc_info=True)
             self.scan_msg = err_msg
             self.scanning_active = False
@@ -664,7 +710,8 @@ class SiloSightApp(ctk.CTk):
                 # Predict tags
                 logging.info(f"Running classifier on image: {filepath}")
                 predictions = self.classifier(filepath)
-                tags = [pred['label'] for pred in predictions if pred['score'] > 0.1]
+                threshold = self.ai_threshold_var.get()
+                tags = [pred['label'] for pred in predictions if pred['score'] > threshold]
                 ai_tags_str = ", ".join(tags)
                 logging.info(f"Generated tags: {ai_tags_str}")
                 
