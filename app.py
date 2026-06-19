@@ -683,7 +683,15 @@ class SiloSightApp(ctk.CTk):
             from transformers import pipeline
             device = 0 if torch.cuda.is_available() else -1
             logging.info(f"Torch device selected: {device} (CUDA available: {torch.cuda.is_available()})")
-            self.classifier = pipeline(pipeline_type, model=model_id, device=device)
+            try:
+                self.classifier = pipeline(pipeline_type, model=model_id, device=device)
+            except KeyError as ke:
+                if pipeline_type == "image-to-text":
+                    logging.info("Fallback: 'image-to-text' task not supported, attempting 'image-text-to-text'...")
+                    pipeline_type = "image-text-to-text"
+                    self.classifier = pipeline(pipeline_type, model=model_id, device=device)
+                else:
+                    raise ke
             logging.info("Classifier pipeline initialized successfully.")
         except Exception as e:
             err_msg = f"Failed to initialize Hugging Face model {model_id}: {str(e)}"
@@ -715,7 +723,7 @@ class SiloSightApp(ctk.CTk):
                 
                 # Predict tags
                 logging.info(f"Running classifier on image: {filepath}")
-                if pipeline_type == "image-to-text":
+                if pipeline_type in ("image-to-text", "image-text-to-text"):
                     predictions = self.classifier(filepath)
                     caption = predictions[0]['generated_text']
                     logging.info(f"Generated caption: '{caption}'")
